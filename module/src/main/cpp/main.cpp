@@ -3,6 +3,105 @@
 #include <riru.h>
 #include <malloc.h>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+#include "nativehelper/scoped_utf_chars.h"
+#include "logging.h"
+
+static char saved_package_name[256] = {0};
+static int saved_uid;
+
+#ifdef DEBUG
+static char saved_process_name[256] = {0};
+#endif
+
+static void appProcessPre(JNIEnv *env, jint *uid, jstring *jNiceName, jstring *jAppDataDir) {
+
+    saved_uid = *uid;
+
+#ifdef DEBUG
+    memset(saved_process_name, 0, 256);
+
+    if (*jNiceName) {
+        sprintf(saved_process_name, "%s", ScopedUtfChars(env, *jNiceName).c_str());
+    }
+#endif
+
+    memset(saved_package_name, 0, 256);
+
+    if (*jAppDataDir) {
+        auto appDataDir = ScopedUtfChars(env, *jAppDataDir).c_str();
+        int user = 0;
+
+        // /data/user/<user_id>/<package>
+        if (sscanf(appDataDir, "/data/%*[^/]/%d/%s", &user, saved_package_name) == 2)
+            goto found;
+
+        // /mnt/expand/<id>/user/<user_id>/<package>
+        if (sscanf(appDataDir, "/mnt/expand/%*[^/]/%*[^/]/%d/%s", &user, saved_package_name) == 2)
+            goto found;
+
+        // /data/data/<package>
+        if (sscanf(appDataDir, "/data/%*[^/]/%s", saved_package_name) == 1)
+            goto found;
+
+        // nothing found
+        saved_package_name[0] = '\0';
+
+        found:;
+    }
+}
+
+void inject(JNIEnv *env) {
+    if (env == nullptr) {
+        LOGW("failed to inject for %s due to env is null", saved_package_name);
+        return;
+    }
+    LOGI("inject android.os.Build for %s ", saved_package_name);
+
+    jclass build_class = env->FindClass("android/os/Build");
+    if (build_class == nullptr) {
+        LOGW("failed to inject android.os.Build for %s due to build is null", saved_package_name);
+        return;
+    }
+
+    jstring new_str = env->NewStringUTF("Xiaomi");
+
+    jfieldID brand_id = env->GetStaticFieldID(build_class, "BRAND", "Ljava/lang/String;");
+    if (brand_id != nullptr) {
+        env->SetStaticObjectField(build_class, brand_id, new_str);
+    }
+
+    jfieldID manufacturer_id = env->GetStaticFieldID(build_class, "MANUFACTURER", "Ljava/lang/String;");
+    if (manufacturer_id != nullptr) {
+        env->SetStaticObjectField(build_class, manufacturer_id, new_str);
+    }
+
+    jfieldID product_id = env->GetStaticFieldID(build_class, "PRODUCT", "Ljava/lang/String;");
+    if (product_id != nullptr) {
+        env->SetStaticObjectField(build_class, product_id, new_str);
+    }
+
+    if(env->ExceptionCheck())
+    {
+        env->ExceptionClear();
+    }
+
+    env->DeleteLocalRef(new_str);
+}
+
+static void appProcessPost(
+        JNIEnv *env, const char *from, const char *package_name, jint uid) {
+
+    LOGD("%s: uid=%d, package=%s, process=%s", from, uid, package_name, saved_process_name);
+
+    if (Config::Packages::Find(package_name)) {
+        LOGI("install hook for %d:%s", uid / 100000, package_name);
+        injectBuild(env);
+        Hook::install();
+    }
+}
 
 static void forkAndSpecializePre(
         JNIEnv *env, jclass clazz, jint *_uid, jint *gid, jintArray *gids, jint *runtimeFlags,
