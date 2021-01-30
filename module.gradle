@@ -1,8 +1,8 @@
 ext {
-    moduleId = "samsungoneuifeatures"
-    moduleName = "Samsung OneUI Features"
+    moduleId = "oneuinetworkspeedindicator"
+    moduleName = "OneUI Network Speed Indicator"
     moduleAuthor = "y6yuan"
-    moduleDescription = "Riru module to turn some featurs on for Samsung OneUI devices."
+    moduleDescription = "Riru module to turn network speed indicator on for OneUI devices."
     moduleVersion = "v1.0"
     moduleVersionCode = 1
 

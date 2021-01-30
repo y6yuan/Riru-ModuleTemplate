@@ -9,7 +9,7 @@
 #include "android/log.h"
 
 #ifndef LOG_TAG
-#define LOG_TAG    "SamsungOneUIFeatures"
+#define LOG_TAG    "OneUINetworkSpeedIndicator"
 #endif
 
 #ifdef DEBUG

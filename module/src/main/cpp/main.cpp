@@ -8,98 +8,92 @@
 
 #include "nativehelper/scoped_utf_chars.h"
 #include "logging.h"
+#include "misc.h"
 
-static char saved_package_name[256] = {0};
-static int saved_uid;
+static bool sHookEnable = false;
+static char *sAppDataDir = NULL;
 
-#ifdef DEBUG
-static char saved_process_name[256] = {0};
-#endif
-
-static void appProcessPre(JNIEnv *env, jint *uid, jstring *jNiceName, jstring *jAppDataDir) {
-
-    saved_uid = *uid;
-
-#ifdef DEBUG
-    memset(saved_process_name, 0, 256);
-
-    if (*jNiceName) {
-        sprintf(saved_process_name, "%s", ScopedUtfChars(env, *jNiceName).c_str());
+static char *jstring2char(JNIEnv *env, jstring target) {
+    char *result = nullptr;
+    if (target) {
+        const char *targetChar = env->GetStringUTFChars(target, nullptr);
+        if (targetChar != nullptr) {
+            int len = strlen(targetChar);
+            result = (char *) malloc((len + 1) * sizeof(char));
+            if (result != nullptr) {
+                memset(result, 0, len + 1);
+                memcpy(result, targetChar, len);
+            }
+            env->ReleaseStringUTFChars(target, targetChar);
+        }
     }
-#endif
+    return result;
+}
 
-    memset(saved_package_name, 0, 256);
+static bool equals(const char *target1, const char *target2) {
+    if (target1 == nullptr && target2 == nullptr) {
+        return true;
+    } else {
+        if (target1 != nullptr && target2 != nullptr) {
+            return strcmp(target1, target2) == 0;
+        } else {
+            return false;
+        }
+    }
+}
 
-    if (*jAppDataDir) {
-        auto appDataDir = ScopedUtfChars(env, *jAppDataDir).c_str();
-        int user = 0;
-
-        // /data/user/<user_id>/<package>
-        if (sscanf(appDataDir, "/data/%*[^/]/%d/%s", &user, saved_package_name) == 2)
-            goto found;
-
-        // /mnt/expand/<id>/user/<user_id>/<package>
-        if (sscanf(appDataDir, "/mnt/expand/%*[^/]/%*[^/]/%d/%s", &user, saved_package_name) == 2)
-            goto found;
-
-        // /data/data/<package>
-        if (sscanf(appDataDir, "/data/%*[^/]/%s", saved_package_name) == 1)
-            goto found;
-
-        // nothing found
-        saved_package_name[0] = '\0';
-
-        found:;
+static void pre(JNIEnv *env, jstring *appDataDir, jstring *niceName) {
+    char *cAppDataDir = jstring2char(env, *appDataDir);
+    if (cAppDataDir == NULL) {
+        LOGD("MEM ERR");
+        return;
+    }
+    sAppDataDir = strdup(cAppDataDir);
+    free(cAppDataDir);
+    if (sAppDataDir == NULL) {
+        LOGD("MEM ERR");
+        return;
+    }
+    char *cNiceName = jstring2char(env, *niceName);
+    sHookEnable = equals(cNiceName, "com.android.settings");
+    if (cNiceName) {
+        free(cNiceName);
     }
 }
 
 void inject(JNIEnv *env) {
     if (env == nullptr) {
-        LOGW("failed to inject for %s due to env is null", saved_package_name);
+        LOGW("failed to inject for com.samsung.android.settings due to env is null");
         return;
     }
-    LOGI("inject android.os.Build for %s ", saved_package_name);
+    LOGI("inject for com.samsung.android.settings ");
 
-    jclass build_class = env->FindClass("android/os/Build");
-    if (build_class == nullptr) {
-        LOGW("failed to inject android.os.Build for %s due to build is null", saved_package_name);
+    jclass network_controller = env->FindClass("com/samsung/android/settings/notification/StatusBarNetworkSpeedController");
+
+    if (network_controller == nullptr) {
+        LOGW("failed to find network speed controller");
         return;
     }
 
-    jstring new_str = env->NewStringUTF("Xiaomi");
+    jfieldID support_network_speed = env->GetStaticFieldID(network_controller, "SUPPORT_NETWORK_SPEED", "Ljava/lang/Boolean;");
 
-    jfieldID brand_id = env->GetStaticFieldID(build_class, "BRAND", "Ljava/lang/String;");
-    if (brand_id != nullptr) {
-        env->SetStaticObjectField(build_class, brand_id, new_str);
+    if (support_network_speed != nullptr) {
+        env->SetStaticBooleanField(network_controller, support_network_speed, JNI_TRUE);
     }
-
-    jfieldID manufacturer_id = env->GetStaticFieldID(build_class, "MANUFACTURER", "Ljava/lang/String;");
-    if (manufacturer_id != nullptr) {
-        env->SetStaticObjectField(build_class, manufacturer_id, new_str);
-    }
-
-    jfieldID product_id = env->GetStaticFieldID(build_class, "PRODUCT", "Ljava/lang/String;");
-    if (product_id != nullptr) {
-        env->SetStaticObjectField(build_class, product_id, new_str);
+    else {
+        LOGW("failed to find SUPPORT_NETWORK_SPEED");
     }
 
     if(env->ExceptionCheck())
     {
         env->ExceptionClear();
     }
-
-    env->DeleteLocalRef(new_str);
 }
 
-static void appProcessPost(
-        JNIEnv *env, const char *from, const char *package_name, jint uid) {
-
-    LOGD("%s: uid=%d, package=%s, process=%s", from, uid, package_name, saved_process_name);
-
-    if (Config::Packages::Find(package_name)) {
-        LOGI("install hook for %d:%s", uid / 100000, package_name);
-        injectBuild(env);
-        Hook::install();
+void post(JNIEnv *env)
+{
+    if (sHookEnable) {
+        inject(env);
     }
 }
 
@@ -109,11 +103,13 @@ static void forkAndSpecializePre(
         jintArray *fdsToClose, jintArray *fdsToIgnore, jboolean *is_child_zygote,
         jstring *instructionSet, jstring *appDataDir, jboolean *isTopApp, jobjectArray *pkgDataInfoList,
         jobjectArray *whitelistedDataInfoList, jboolean *bindMountAppDataDirs, jboolean *bindMountAppStorageDirs) {
+    pre(env, appDataDir, niceName);
 }
 
 static void forkAndSpecializePost(JNIEnv *env, jclass clazz, jint res) {
     if (res == 0) {
         // in app process
+        post(env);
     } else {
         // in zygote process, res is child pid
         // don't print log here, see https://github.com/RikkaApps/Riru/blob/77adfd6a4a6a81bfd20569c910bc4854f2f84f5e/riru-core/jni/main/jni_native_method.cpp#L55-L66
@@ -127,11 +123,13 @@ static void specializeAppProcessPre(
         jboolean *isTopApp, jobjectArray *pkgDataInfoList, jobjectArray *whitelistedDataInfoList,
         jboolean *bindMountAppDataDirs, jboolean *bindMountAppStorageDirs) {
     // added from Android 10, but disabled at least in Google Pixel devices
+    pre(env, appDataDir, niceName);
 }
 
 static void specializeAppProcessPost(
         JNIEnv *env, jclass clazz) {
     // added from Android 10, but disabled at least in Google Pixel devices
+    post(env);
 }
 
 static void forkSystemServerPre(
